@@ -10,7 +10,12 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y autoconf automake libtool pkg-config gettext libtinfo5
+          sudo apt-get install -y autoconf automake libtool pkg-config gettext libtinfo6
+
+      - name: Fix NDK clang libtinfo dependency (Ubuntu 24.04)
+        run: |
+          # NDK r25c 的 clang 可能链接了 libtinfo.so.5，但 24.04 只有 so.6
+          sudo ln -sf /lib/x86_64-linux-gnu/libtinfo.so.6 /lib/x86_64-linux-gnu/libtinfo.so.5
 
       - name: Setup Android NDK
         uses: nttld/setup-ndk@v1
@@ -25,6 +30,26 @@ jobs:
           git clone --depth=1 https://github.com/mpartel/bindfs.git
           git clone --depth=1 https://github.com/agnostic-apollo/bindfs.git bindfs-android
           git clone --depth=1 https://github.com/agnostic-apollo/fuse.git
+
+      - name: Diagnose NDK compiler
+        env:
+          NDK: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          export TOOLCHAIN=$NDK/toolchains/llvm/prebuilt/linux-x86_64
+          export TARGET=aarch64-linux-android
+          export API=21
+          export CC=$TOOLCHAIN/bin/$TARGET$API-clang
+          
+          echo "=== Compiler ldd ==="
+          ldd $TOOLCHAIN/bin/clang 2>/dev/null || true
+          
+          echo "=== Compiler version ==="
+          $CC --version
+          
+          echo "=== Simple compile test ==="
+          echo 'int main(){return 0;}' > /tmp/test.c
+          $CC /tmp/test.c -o /tmp/test
+          file /tmp/test
 
       - name: Build fuse (static library)
         env:
@@ -42,10 +67,6 @@ jobs:
           export STRIP=$TOOLCHAIN/bin/llvm-strip
           unset LD
           
-          # 诊断：确认编译器能跑
-          echo "=== Compiler version ==="
-          $CC --version
-          
           cd fuse
           ./makeconf.sh
           ./configure \
@@ -55,7 +76,7 @@ jobs:
             --disable-mtab \
             --enable-android=yes \
             --enable-static=yes \
-            2>&1 || (echo "=== CONFIG.LOG ===" && cat config.log | tail -n 80 && exit 1)
+            2>&1 || (echo "=== CONFIG.LOG ===" && cat config.log | tail -n 100 && exit 1)
           
           make -j$(nproc)
           make DESTDIR=$PWD/install install
@@ -92,7 +113,7 @@ jobs:
             --host=$TARGET \
             --with-sysroot=$SYSROOT \
             --enable-static=yes \
-            2>&1 || (echo "=== CONFIG.LOG ===" && cat config.log | tail -n 80 && exit 1)
+            2>&1 || (echo "=== CONFIG.LOG ===" && cat config.log | tail -n 100 && exit 1)
           
           make -j$(nproc)
           make DESTDIR=$PWD/install install
