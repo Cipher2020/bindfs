@@ -14,16 +14,25 @@ jobs:
 
       - name: Fix NDK clang libtinfo dependency (Ubuntu 24.04)
         run: |
-          # NDK r25c 的 clang 可能链接了 libtinfo.so.5，但 24.04 只有 so.6
           sudo ln -sf /lib/x86_64-linux-gnu/libtinfo.so.6 /lib/x86_64-linux-gnu/libtinfo.so.5
 
-      - name: Setup Android NDK
-        uses: nttld/setup-ndk@v1
-        id: setup-ndk
-        with:
-          ndk-version: r25c
-          add-to-path: true
-          local-cache: true
+      - name: Download Android NDK r25c
+        run: |
+          wget -q https://dl.google.com/android/repository/android-ndk-r25c-linux.zip
+          unzip -q android-ndk-r25c-linux.zip
+          echo "NDK_PATH=$PWD/android-ndk-r25c" >> $GITHUB_ENV
+
+      - name: Verify NDK compiler
+        run: |
+          export TOOLCHAIN=$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64
+          echo "=== Listing bin dir ==="
+          ls $TOOLCHAIN/bin/clang* | head -5
+          echo "=== Compiler version ==="
+          $TOOLCHAIN/bin/aarch64-linux-android21-clang --version
+          echo "=== Simple compile test ==="
+          echo 'int main(){return 0;}' > /tmp/test.c
+          $TOOLCHAIN/bin/aarch64-linux-android21-clang /tmp/test.c -o /tmp/test
+          file /tmp/test
 
       - name: Clone sources
         run: |
@@ -31,29 +40,9 @@ jobs:
           git clone --depth=1 https://github.com/agnostic-apollo/bindfs.git bindfs-android
           git clone --depth=1 https://github.com/agnostic-apollo/fuse.git
 
-      - name: Diagnose NDK compiler
-        env:
-          NDK: ${{ steps.setup-ndk.outputs.ndk-path }}
-        run: |
-          export TOOLCHAIN=$NDK/toolchains/llvm/prebuilt/linux-x86_64
-          export TARGET=aarch64-linux-android
-          export API=21
-          export CC=$TOOLCHAIN/bin/$TARGET$API-clang
-          
-          echo "=== Compiler ldd ==="
-          ldd $TOOLCHAIN/bin/clang 2>/dev/null || true
-          
-          echo "=== Compiler version ==="
-          $CC --version
-          
-          echo "=== Simple compile test ==="
-          echo 'int main(){return 0;}' > /tmp/test.c
-          $CC /tmp/test.c -o /tmp/test
-          file /tmp/test
-
       - name: Build fuse (static library)
         env:
-          NDK: ${{ steps.setup-ndk.outputs.ndk-path }}
+          NDK: ${{ env.NDK_PATH }}
         run: |
           export TOOLCHAIN=$NDK/toolchains/llvm/prebuilt/linux-x86_64
           export TARGET=aarch64-linux-android
@@ -83,7 +72,7 @@ jobs:
 
       - name: Build bindfs (with Android userinfo.c patch)
         env:
-          NDK: ${{ steps.setup-ndk.outputs.ndk-path }}
+          NDK: ${{ env.NDK_PATH }}
         run: |
           export TOOLCHAIN=$NDK/toolchains/llvm/prebuilt/linux-x86_64
           export TARGET=aarch64-linux-android
