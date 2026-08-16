@@ -61,7 +61,7 @@ jobs:
             --enable-android=yes \
             --enable-static=yes \
             --disable-shared \
-            2>&1 || (echo "=== CONFIG.LOG ===" && cat config.log | tail -n 100 && exit 1)
+            2>&1 || (echo "=== FUSE CONFIG.LOG ===" && cat config.log | tail -n 100 && exit 1)
           
           make -j$(nproc)
           make DESTDIR=$PWD/install install
@@ -69,7 +69,7 @@ jobs:
       - name: Patch userinfo.c for Android
         run: |
           cd bindfs/src
-          # 在文件开头插入 Android bionic 缺失的函数 stub（无条件插入，因为目标平台是 Android）
+          # 在文件开头插入 Android bionic 缺失的函数 stub（无条件插入）
           sed -i '1i\
           // Android stub functions for missing bionic functions\n\
           static struct group* getgrent(void) { return 0; }\
@@ -99,32 +99,33 @@ jobs:
           unset LD
           
           export FUSE_INSTALL=$PWD/fuse/install/usr/local
-          export PKG_CONFIG_PATH=$FUSE_INSTALL/lib/pkgconfig:$PKG_CONFIG_PATH
+          
+          # 验证 FUSE 静态库和头文件是否存在
+          echo "=== Checking fuse library ==="
+          ls -l $FUSE_INSTALL/lib/libfuse.a || echo "libfuse.a not found"
+          ls -l $FUSE_INSTALL/include/fuse/fuse.h || echo "fuse.h not found"
+          
+          # 设置 FUSE_CFLAGS 和 FUSE_LIBS 直接传递给 configure，跳过 pkg-config 检测
+          export FUSE_CFLAGS="-I$FUSE_INSTALL/include"
+          export FUSE_LIBS="-L$FUSE_INSTALL/lib -lfuse"
           
           cd bindfs
           
           ./autogen.sh
           
-          export CPPFLAGS="-D __ANDROID__"
-          export CFLAGS="-static -I$FUSE_INSTALL/include -I$FUSE_INSTALL/include/fuse"
-          # 强制静态链接 libfuse，避免误选动态库
-          export LDFLAGS="-static -static-libgcc -L$FUSE_INSTALL/lib -Wl,-Bstatic -lfuse -Wl,-Bdynamic"
+          # CFLAGS 和 LDFLAGS 保留静态链接，-D__ANDROID__ 确保条件编译生效
+          export CFLAGS="-static -D__ANDROID__ -I$FUSE_INSTALL/include -I$FUSE_INSTALL/include/fuse"
+          export LDFLAGS="-static -static-libgcc -L$FUSE_INSTALL/lib"
           
           ./configure \
             --host=$TARGET \
             --with-sysroot=$SYSROOT \
             --enable-static=yes \
-            2>&1 || (echo "=== CONFIG.LOG ===" && cat config.log | tail -n 100 && exit 1)
+            2>&1 || (echo "=== BINDFS CONFIG.LOG ===" && cat config.log | tail -n 200 && exit 1)
           
           make -j$(nproc)
           make DESTDIR=$PWD/install install
           
+          # 剥离调试符号
           $STRIP install/bin/bindfs 2>/dev/null || $STRIP install/usr/local/bin/bindfs 2>/dev/null || true
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: bindfs-arm64-v8a
-          path: |
-            bindfs/install/
-            fuse/install/
