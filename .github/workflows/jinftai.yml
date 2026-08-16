@@ -25,11 +25,7 @@ jobs:
       - name: Verify NDK compiler
         run: |
           export TOOLCHAIN=$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64
-          echo "=== Listing bin dir ==="
-          ls $TOOLCHAIN/bin/clang* | head -5
-          echo "=== Compiler version ==="
           $TOOLCHAIN/bin/aarch64-linux-android21-clang --version
-          echo "=== Simple compile test ==="
           echo 'int main(){return 0;}' > /tmp/test.c
           $TOOLCHAIN/bin/aarch64-linux-android21-clang /tmp/test.c -o /tmp/test
           file /tmp/test
@@ -37,7 +33,6 @@ jobs:
       - name: Clone sources
         run: |
           git clone --depth=1 https://github.com/mpartel/bindfs.git
-          git clone --depth=1 https://github.com/agnostic-apollo/bindfs.git bindfs-android
           git clone --depth=1 https://github.com/agnostic-apollo/fuse.git
 
       - name: Build fuse (static library)
@@ -70,7 +65,28 @@ jobs:
           make -j$(nproc)
           make DESTDIR=$PWD/install install
 
-      - name: Build bindfs (with Android userinfo.c patch)
+      - name: Patch userinfo.c for Android
+        run: |
+          cd bindfs/src
+          
+          # 【关键】在 userinfo.c 里插入 Android 缺失函数的 stub
+          # 不要替换整个文件，只添加 bionic 不支持的函数
+          sed -i '/^#include "userinfo.h"/a\
+          \
+          #if defined(__ANDROID__)\
+          static struct group* getgrent(void) { return 0; }\
+          static struct passwd* getpwent(void) { return 0; }\
+          static void setgrent(void) {}\
+          static void endgrent(void) {}\
+          static void endpwent(void) {}\
+          static int getgrgid_r(gid_t gid, struct group * grp, char * buf, size_t buflen, struct group ** result) { *result = 0; return 0; }\
+          static int getgrnam_r(const char * name, struct group * grp, char * buf, size_t buflen, struct group ** result) { *result = 0; return 0; }\
+          #endif' userinfo.c
+          
+          echo "=== Patched userinfo.c (first 30 lines) ==="
+          head -n 30 userinfo.c
+
+      - name: Build bindfs
         env:
           NDK: ${{ env.NDK_PATH }}
         run: |
@@ -90,7 +106,6 @@ jobs:
           export PKG_CONFIG_PATH=$FUSE_INSTALL/lib/pkgconfig:$PKG_CONFIG_PATH
           
           cd bindfs
-          cp ../bindfs-android/src/userinfo.c src/userinfo.c
           
           ./autogen.sh
           
