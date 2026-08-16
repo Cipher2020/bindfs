@@ -1,4 +1,4 @@
-name: Build bindfs for Android
+name: Build bindfs Android arm64-v8a
 
 on:
   workflow_dispatch:
@@ -22,55 +22,78 @@ jobs:
           add-to-path: true
           local-cache: true
 
-      - name: Clone build automator
-        run: |
-          git clone --depth=1 https://github.com/agnostic-apollo/Android-NDK-Cross-Compile-Build-Automator.git automator
-
       - name: Clone fuse & bindfs (Android ports)
         run: |
-          git clone --depth=1 https://github.com/agnostic-apollo/fuse.git automator/projects/fuse
-          git clone --depth=1 https://github.com/agnostic-apollo/bindfs.git automator/projects/bindfs
+          git clone --depth=1 https://github.com/agnostic-apollo/fuse.git
+          git clone --depth=1 https://github.com/agnostic-apollo/bindfs.git
 
-      - name: Copy post-build scripts
-        run: |
-          mkdir -p automator/post_build_scripts
-          cp automator/projects/fuse/post_build_scripts/fusermount_extractor.sh automator/post_build_scripts/ 2>/dev/null || true
-          cp automator/projects/bindfs/post_build_scripts/bindfs_extractor.sh automator/post_build_scripts/ 2>/dev/null || true
-
-      - name: Configure automator
-        working-directory: automator
+      - name: Build fuse (static library)
         env:
-          NDK_PATH: ${{ steps.setup-ndk.outputs.ndk-path }}
+          NDK: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
-          # 1. 修正 NDK 路径
-          sed -i "s|^export ANDROID_NDK_ROOT=.*|export ANDROID_NDK_ROOT=\"${NDK_PATH}\"|" android_ndk_cross_compile_build_automator.sh
+          export TOOLCHAIN=$NDK/toolchains/llvm/prebuilt/linux-x86_64
+          export TARGET=aarch64-linux-android
+          export API=21
           
-          # 2. 删掉已废弃的 armeabi
-          sed -i 's/ARCHS_SRC_TO_BUILD="armeabi armeabi-v7a arm64-v8a x86 x86-64"/ARCHS_SRC_TO_BUILD="armeabi-v7a arm64-v8a x86 x86-64"/' android_ndk_cross_compile_build_automator.sh
+          export AR=$TOOLCHAIN/bin/llvm-ar
+          export CC=$TOOLCHAIN/bin/$TARGET$API-clang
+          export CXX=$TOOLCHAIN/bin/$TARGET$API-clang++
+          export LD=$TOOLCHAIN/bin/ld
+          export RANLIB=$TOOLCHAIN/bin/llvm-ranlib
+          export STRIP=$TOOLCHAIN/bin/llvm-strip
           
-          # 3. 设置编译项目和后处理脚本
-          sed -i 's/^PROJECTS_TO_BUILD=""/PROJECTS_TO_BUILD="fuse bindfs"/' android_ndk_cross_compile_build_automator.sh
-          sed -i 's/^POST_BUILD_SCRIPTS_TO_RUN=""/POST_BUILD_SCRIPTS_TO_RUN="fusermount_extractor.sh bindfs_extractor.sh"/' android_ndk_cross_compile_build_automator.sh
+          cd fuse
+          ./makeconf.sh
+          ./configure \
+            --host=$TARGET \
+            --prefix=$PWD/install \
+            --disable-shared \
+            --enable-static \
+            --disable-example \
+            --disable-mtab
           
-          # 4. 修改 toolchain 目录到工作区
-          sed -i "s|^export TOOLCHAIN_DIR_PREFIX=.*|export TOOLCHAIN_DIR_PREFIX=\"$PWD/ndk-toolchains\"|" android_ndk_cross_compile_build_automator.sh
-          
-          # 5. 【关键修复】NDK r25c 没有 platforms 目录，写死 API_LEVELS
-          sed -i 's|^API_LEVELS=.*|API_LEVELS="16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34"|' tools/setup_defaults
-          sed -i 's|^LATEST_API_LEVEL=.*|LATEST_API_LEVEL=34|' tools/setup_defaults
-          
-          echo "=== 配置校验 ==="
-          grep -E '^(export )?(ANDROID_NDK_ROOT|TOOLCHAIN_DIR_PREFIX|ARCHS_SRC_TO_BUILD|PROJECTS_TO_BUILD|POST_BUILD_SCRIPTS_TO_RUN)=' android_ndk_cross_compile_build_automator.sh
-          grep -E '^(API_LEVELS|LATEST_API_LEVEL)=' tools/setup_defaults
+          make -j$(nproc)
+          make install
 
-      - name: Build fuse & bindfs
-        working-directory: automator
-        run: bash ./android_ndk_cross_compile_build_automator.sh
+      - name: Build bindfs (static binary)
+        env:
+          NDK: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          export TOOLCHAIN=$NDK/toolchains/llvm/prebuilt/linux-x86_64
+          export TARGET=aarch64-linux-android
+          export API=21
+          
+          export AR=$TOOLCHAIN/bin/llvm-ar
+          export CC=$TOOLCHAIN/bin/$TARGET$API-clang
+          export CXX=$TOOLCHAIN/bin/$TARGET$API-clang++
+          export LD=$TOOLCHAIN/bin/ld
+          export RANLIB=$TOOLCHAIN/bin/llvm-ranlib
+          export STRIP=$TOOLCHAIN/bin/llvm-strip
+          
+          # 让 bindfs 找到刚编译好的 fuse
+          export PKG_CONFIG_PATH=$PWD/fuse/install/lib/pkgconfig:$PKG_CONFIG_PATH
+          export CFLAGS="-I$PWD/fuse/install/include"
+          export LDFLAGS="-L$PWD/fuse/install/lib"
+          
+          cd bindfs
+          ./autogen.sh
+          ./configure \
+            --host=$TARGET \
+            --prefix=$PWD/install \
+            --disable-shared \
+            --enable-static
+          
+          make -j$(nproc)
+          make install
+          
+          # strip 减小体积
+          $STRIP install/bin/bindfs
 
-      - name: Upload build artifacts
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: bindfs-android-binaries
+          name: bindfs-arm64-v8a-static
           path: |
-            automator/out/
-            automator/install/
+            bindfs/install/bin/bindfs
+            fuse/install/bin/fusermount
+            fuse/install/bin/fusermount3
