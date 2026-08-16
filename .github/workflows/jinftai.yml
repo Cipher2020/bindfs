@@ -22,14 +22,11 @@ jobs:
 
       - name: Clone sources
         run: |
-          # 1. 原版 bindfs（你要跟进的最新版）
           git clone --depth=1 https://github.com/mpartel/bindfs.git
-          # 2. Android 适配 patch 仓库（主要用来取 userinfo.c）
           git clone --depth=1 https://github.com/agnostic-apollo/bindfs.git bindfs-android
-          # 3. Android 适配版 fuse 2.x（已知可交叉编译）
           git clone --depth=1 https://github.com/agnostic-apollo/fuse.git
 
-      - name: Build fuse 2.x static library
+      - name: Build fuse (static library)
         env:
           NDK: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
@@ -43,22 +40,23 @@ jobs:
           export CXX=$TOOLCHAIN/bin/$TARGET$API-clang++
           export RANLIB=$TOOLCHAIN/bin/llvm-ranlib
           export STRIP=$TOOLCHAIN/bin/llvm-strip
-          export CFLAGS="--sysroot=$SYSROOT"
-          export LDFLAGS="--sysroot=$SYSROOT"
-          export LD=$CC
+          
+          # 关键：不要覆盖 LD，让 configure 自己找链接器
+          unset LD
           
           cd fuse
           ./makeconf.sh
           ./configure \
             --host=$TARGET \
-            --prefix=$PWD/install \
-            --disable-shared \
-            --enable-static \
-            --disable-example \
-            --disable-mtab
+            --with-sysroot=$SYSROOT \
+            --enable-example=no \
+            --disable-mtab \
+            --enable-android=yes \
+            --enable-static=yes
           
           make -j$(nproc)
-          make install
+          # 用 DESTDIR 安装，保持和 automator 一致的目录结构
+          make DESTDIR=$PWD/install install
 
       - name: Build bindfs (with Android userinfo.c patch)
         env:
@@ -75,33 +73,39 @@ jobs:
           export RANLIB=$TOOLCHAIN/bin/llvm-ranlib
           export STRIP=$TOOLCHAIN/bin/llvm-strip
           
-          export PKG_CONFIG_PATH=$PWD/fuse/install/lib/pkgconfig:$PKG_CONFIG_PATH
-          export CFLAGS="--sysroot=$SYSROOT -I$PWD/fuse/install/include"
-          export LDFLAGS="--sysroot=$SYSROOT -L$PWD/fuse/install/lib"
-          export LD=$CC
+          unset LD
+          
+          # fuse 安装后实际路径是 install/usr/local/...
+          export FUSE_INSTALL=$PWD/fuse/install/usr/local
+          export PKG_CONFIG_PATH=$FUSE_INSTALL/lib/pkgconfig:$PKG_CONFIG_PATH
           
           cd bindfs
           
-          # 【关键】用 Android 适配版的 userinfo.c 替换原版
-          # 解决 bionic 没有 getpwent/setpwent/endpwent 的问题
+          # 替换 Android 不兼容的 userinfo.c
           cp ../bindfs-android/src/userinfo.c src/userinfo.c
           
           ./autogen.sh
+          
+          # 参照 agnostic-apollo 构建脚本设置 flags
+          export CPPFLAGS="-D __ANDROID__"
+          export CFLAGS="-static -I$FUSE_INSTALL/include -I$FUSE_INSTALL/include/fuse"
+          export LDFLAGS="-static -static-libgcc -L$FUSE_INSTALL/lib"
+          
           ./configure \
             --host=$TARGET \
-            --prefix=$PWD/install \
-            --disable-shared \
-            --enable-static
+            --with-sysroot=$SYSROOT \
+            --enable-static=yes
           
           make -j$(nproc)
-          make install
+          make DESTDIR=$PWD/install install
           
-          $STRIP install/bin/bindfs
+          # strip 减小体积（路径兼容两种可能）
+          $STRIP install/bin/bindfs 2>/dev/null || $STRIP install/usr/local/bin/bindfs 2>/dev/null || true
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: bindfs-arm64-v8a
           path: |
-            bindfs/install/bin/bindfs
-            fuse/install/bin/fusermount
+            bindfs/install/
+            fuse/install/
