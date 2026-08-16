@@ -1,9 +1,7 @@
 name: Build bindfs for Android
 
 on:
-  # 允许手动触发
   workflow_dispatch:
-  # 也可以 push 到 main 时自动编译
   push:
     branches: [main]
 
@@ -36,28 +34,31 @@ jobs:
       - name: Copy post-build scripts
         run: |
           mkdir -p automator/post_build_scripts
-          cp automator/projects/fuse/post_build_scripts/fusermount_extractor.sh automator/post_build_scripts/ || true
-          cp automator/projects/bindfs/post_build_scripts/bindfs_extractor.sh automator/post_build_scripts/ || true
+          cp automator/projects/fuse/post_build_scripts/fusermount_extractor.sh automator/post_build_scripts/ 2>/dev/null || true
+          cp automator/projects/bindfs/post_build_scripts/bindfs_extractor.sh automator/post_build_scripts/ 2>/dev/null || true
 
       - name: Configure automator
         working-directory: automator
         env:
           NDK_PATH: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
+          # 关键修复 1：匹配 export ANDROID_NDK_ROOT=...
+          sed -i "s|^export ANDROID_NDK_ROOT=.*|export ANDROID_NDK_ROOT=\"${NDK_PATH}\"|" android_ndk_cross_compile_build_automator.sh
+          
+          # 关键修复 2：删掉已废弃的 armeabi，NDK r25c 不支持
+          sed -i 's/ARCHS_SRC_TO_BUILD="armeabi armeabi-v7a arm64-v8a x86 x86-64"/ARCHS_SRC_TO_BUILD="armeabi-v7a arm64-v8a x86 x86-64"/' android_ndk_cross_compile_build_automator.sh
+          
           # 设置要编译的项目
-          sed -i 's/^PROJECTS_TO_BUILD=.*/PROJECTS_TO_BUILD="fuse bindfs"/' android_ndk_cross_compile_build_automator.sh
+          sed -i 's/^PROJECTS_TO_BUILD=""/PROJECTS_TO_BUILD="fuse bindfs"/' android_ndk_cross_compile_build_automator.sh
           
           # 设置编译后提取脚本
-          sed -i 's/^POST_BUILD_SCRIPTS_TO_RUN=.*/POST_BUILD_SCRIPTS_TO_RUN="fusermount_extractor.sh bindfs_extractor.sh"/' android_ndk_cross_compile_build_automator.sh
+          sed -i 's/^POST_BUILD_SCRIPTS_TO_RUN=""/POST_BUILD_SCRIPTS_TO_RUN="fusermount_extractor.sh bindfs_extractor.sh"/' android_ndk_cross_compile_build_automator.sh
           
-          # 设置目标架构（按需增删）
-          sed -i 's/^ARCHS_SRC_TO_BUILD=.*/ARCHS_SRC_TO_BUILD="arm64-v8a armeabi-v7a x86 x86_64"/' android_ndk_cross_compile_build_automator.sh
+          # 把 toolchain 目录也改到工作区，避免权限问题
+          sed -i "s|^export TOOLCHAIN_DIR_PREFIX=.*|export TOOLCHAIN_DIR_PREFIX=\"$PWD/ndk-toolchains\"|" android_ndk_cross_compile_build_automator.sh
           
-          # 指向 NDK 路径
-          sed -i "s|^ANDROID_NDK_ROOT=.*|ANDROID_NDK_ROOT=${NDK_PATH}|" android_ndk_cross_compile_build_automator.sh
-          
-          echo "=== Config check ==="
-          grep -E '^(PROJECTS_TO_BUILD|POST_BUILD_SCRIPTS_TO_RUN|ARCHS_SRC_TO_BUILD|ANDROID_NDK_ROOT)=' android_ndk_cross_compile_build_automator.sh
+          echo "=== 配置校验 ==="
+          grep -E '^(export )?(ANDROID_NDK_ROOT|TOOLCHAIN_DIR_PREFIX|ARCHS_SRC_TO_BUILD|PROJECTS_TO_BUILD|POST_BUILD_SCRIPTS_TO_RUN)=' android_ndk_cross_compile_build_automator.sh
 
       - name: Build fuse & bindfs
         working-directory: automator
