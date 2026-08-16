@@ -1,96 +1,72 @@
 name: Build bindfs for Android
 
-# 触发条件：推送或手动触发
 on:
-  push:
-    branches: [ "main", "master" ]
+  # 允许手动触发
   workflow_dispatch:
-
-# 为所有任务设置环境变量，统一使用 bash
-defaults:
-  run:
-    shell: bash
+  # 也可以 push 到 main 时自动编译
+  push:
+    branches: [main]
 
 jobs:
   build:
-    name: Build for ${{ matrix.abi }}
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        # 指定要编译的目标架构，可按需增删
-        abi: [arm64-v8a, armeabi-v7a, x86_64, x86]
-
     steps:
-      - name: 检出 bindfs 源码
-        uses: actions/checkout@v4
-
-      - name: 安装编译依赖
+      - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            autoconf \
-            automake \
-            libtool \
-            pkg-config \
-            make \
-            g++
+          sudo apt-get install -y autoconf automake libtool pkg-config
 
-      - name: 设置 Android NDK
-        uses: actions/setup-android@v4
+      - name: Setup Android NDK
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
         with:
-          ndk: latest
+          ndk-version: r25c
+          add-to-path: true
+          local-cache: true
 
-      - name: 配置编译环境
+      - name: Clone build automator
         run: |
-          # 设置 NDK 路径（actions/setup-android 已配置好 ANDROID_NDK_ROOT）
-          NDK_PATH=$ANDROID_NDK_ROOT
-          echo "NDK_PATH=$NDK_PATH" >> $GITHUB_ENV
-          
-          # 设置目标 API 级别（Android 5.0+ 才支持 FUSE）
-          API_LEVEL=21
-          echo "API_LEVEL=$API_LEVEL" >> $GITHUB_ENV
+          git clone --depth=1 https://github.com/agnostic-apollo/Android-NDK-Cross-Compile-Build-Automator.git automator
 
-      - name: 交叉编译 bindfs (${{ matrix.abi }})
+      - name: Clone fuse & bindfs (Android ports)
         run: |
-          NDK_PATH=${{ env.NDK_PATH }}
-          API_LEVEL=${{ env.API_LEVEL }}
-          ABI=${{ matrix.abi }}
-          
-          # 创建独立工具链（兼容旧版 NDK 的写法）
-          $NDK_PATH/build/tools/make_standalone_toolchain.py \
-            --arch $ABI \
-            --api $API_LEVEL \
-            --install-dir ./toolchain
-          
-          # 将工具链加入 PATH
-          export PATH=$(pwd)/toolchain/bin:$PATH
-          
-          # 设置编译器前缀
-          case $ABI in
-            arm64-v8a)   HOST=aarch64-linux-android ;;
-            armeabi-v7a) HOST=armv7a-linux-androideabi ;;
-            x86_64)      HOST=x86_64-linux-android ;;
-            x86)         HOST=i686-linux-android ;;
-          esac
-          
-          # 配置（注意：需要静态链接 libfuse，这里只编译 bindfs 本身）
-          ./configure \
-            --host=$HOST \
-            --enable-static \
-            --disable-shared \
-            LDFLAGS="-static -Wl,--gc-sections" \
-            CPPFLAGS="-I$NDK_PATH/sysroot/usr/include" \
-            LIBS="-lfuse -lpthread"
-          
-          # 编译
-          make -j$(nproc)
-          
-          # 检查生成的二进制文件
-          file bindfs || true
-          ls -lh bindfs || true
+          git clone --depth=1 https://github.com/agnostic-apollo/fuse.git automator/projects/fuse
+          git clone --depth=1 https://github.com/agnostic-apollo/bindfs.git automator/projects/bindfs
 
-      - name: 上传编译产物
+      - name: Copy post-build scripts
+        run: |
+          mkdir -p automator/post_build_scripts
+          cp automator/projects/fuse/post_build_scripts/fusermount_extractor.sh automator/post_build_scripts/ || true
+          cp automator/projects/bindfs/post_build_scripts/bindfs_extractor.sh automator/post_build_scripts/ || true
+
+      - name: Configure automator
+        working-directory: automator
+        env:
+          NDK_PATH: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          # 设置要编译的项目
+          sed -i 's/^PROJECTS_TO_BUILD=.*/PROJECTS_TO_BUILD="fuse bindfs"/' android_ndk_cross_compile_build_automator.sh
+          
+          # 设置编译后提取脚本
+          sed -i 's/^POST_BUILD_SCRIPTS_TO_RUN=.*/POST_BUILD_SCRIPTS_TO_RUN="fusermount_extractor.sh bindfs_extractor.sh"/' android_ndk_cross_compile_build_automator.sh
+          
+          # 设置目标架构（按需增删）
+          sed -i 's/^ARCHS_SRC_TO_BUILD=.*/ARCHS_SRC_TO_BUILD="arm64-v8a armeabi-v7a x86 x86_64"/' android_ndk_cross_compile_build_automator.sh
+          
+          # 指向 NDK 路径
+          sed -i "s|^ANDROID_NDK_ROOT=.*|ANDROID_NDK_ROOT=${NDK_PATH}|" android_ndk_cross_compile_build_automator.sh
+          
+          echo "=== Config check ==="
+          grep -E '^(PROJECTS_TO_BUILD|POST_BUILD_SCRIPTS_TO_RUN|ARCHS_SRC_TO_BUILD|ANDROID_NDK_ROOT)=' android_ndk_cross_compile_build_automator.sh
+
+      - name: Build fuse & bindfs
+        working-directory: automator
+        run: bash ./android_ndk_cross_compile_build_automator.sh
+
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: bindfs-${{ matrix.abi }}
-          path: bindfs
+          name: bindfs-android-binaries
+          path: |
+            automator/out/
+            automator/install/
