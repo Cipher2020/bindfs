@@ -10,7 +10,7 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y autoconf automake libtool pkg-config gettext
+          sudo apt-get install -y autoconf automake libtool pkg-config gettext libtinfo5
 
       - name: Setup Android NDK
         uses: nttld/setup-ndk@v1
@@ -40,9 +40,11 @@ jobs:
           export CXX=$TOOLCHAIN/bin/$TARGET$API-clang++
           export RANLIB=$TOOLCHAIN/bin/llvm-ranlib
           export STRIP=$TOOLCHAIN/bin/llvm-strip
-          
-          # 关键：不要覆盖 LD，让 configure 自己找链接器
           unset LD
+          
+          # 诊断：确认编译器能跑
+          echo "=== Compiler version ==="
+          $CC --version
           
           cd fuse
           ./makeconf.sh
@@ -52,10 +54,10 @@ jobs:
             --enable-example=no \
             --disable-mtab \
             --enable-android=yes \
-            --enable-static=yes
+            --enable-static=yes \
+            2>&1 || (echo "=== CONFIG.LOG ===" && cat config.log | tail -n 80 && exit 1)
           
           make -j$(nproc)
-          # 用 DESTDIR 安装，保持和 automator 一致的目录结构
           make DESTDIR=$PWD/install install
 
       - name: Build bindfs (with Android userinfo.c patch)
@@ -72,21 +74,16 @@ jobs:
           export CXX=$TOOLCHAIN/bin/$TARGET$API-clang++
           export RANLIB=$TOOLCHAIN/bin/llvm-ranlib
           export STRIP=$TOOLCHAIN/bin/llvm-strip
-          
           unset LD
           
-          # fuse 安装后实际路径是 install/usr/local/...
           export FUSE_INSTALL=$PWD/fuse/install/usr/local
           export PKG_CONFIG_PATH=$FUSE_INSTALL/lib/pkgconfig:$PKG_CONFIG_PATH
           
           cd bindfs
-          
-          # 替换 Android 不兼容的 userinfo.c
           cp ../bindfs-android/src/userinfo.c src/userinfo.c
           
           ./autogen.sh
           
-          # 参照 agnostic-apollo 构建脚本设置 flags
           export CPPFLAGS="-D __ANDROID__"
           export CFLAGS="-static -I$FUSE_INSTALL/include -I$FUSE_INSTALL/include/fuse"
           export LDFLAGS="-static -static-libgcc -L$FUSE_INSTALL/lib"
@@ -94,12 +91,12 @@ jobs:
           ./configure \
             --host=$TARGET \
             --with-sysroot=$SYSROOT \
-            --enable-static=yes
+            --enable-static=yes \
+            2>&1 || (echo "=== CONFIG.LOG ===" && cat config.log | tail -n 80 && exit 1)
           
           make -j$(nproc)
           make DESTDIR=$PWD/install install
           
-          # strip 减小体积（路径兼容两种可能）
           $STRIP install/bin/bindfs 2>/dev/null || $STRIP install/usr/local/bin/bindfs 2>/dev/null || true
 
       - name: Upload artifacts
