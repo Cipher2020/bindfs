@@ -12,7 +12,7 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y autoconf automake libtool pkg-config
+          sudo apt-get install -y autoconf automake libtool pkg-config gettext
 
       - name: Setup Android NDK
         uses: nttld/setup-ndk@v1
@@ -70,7 +70,6 @@ jobs:
           export RANLIB=$TOOLCHAIN/bin/llvm-ranlib
           export STRIP=$TOOLCHAIN/bin/llvm-strip
           
-          # 让 bindfs 找到刚编译好的 fuse
           export PKG_CONFIG_PATH=$PWD/fuse/install/lib/pkgconfig:$PKG_CONFIG_PATH
           export CFLAGS="-I$PWD/fuse/install/include"
           export LDFLAGS="-L$PWD/fuse/install/lib"
@@ -86,7 +85,6 @@ jobs:
           make -j$(nproc)
           make install
           
-          # strip 减小体积
           $STRIP install/bin/bindfs
 
       - name: Upload artifacts
