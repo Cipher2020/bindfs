@@ -1,0 +1,96 @@
+name: Build bindfs for Android
+
+# 触发条件：推送或手动触发
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+# 为所有任务设置环境变量，统一使用 bash
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: Build for ${{ matrix.abi }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # 指定要编译的目标架构，可按需增删
+        abi: [arm64-v8a, armeabi-v7a, x86_64, x86]
+
+    steps:
+      - name: 检出 bindfs 源码
+        uses: actions/checkout@v4
+
+      - name: 安装编译依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            autoconf \
+            automake \
+            libtool \
+            pkg-config \
+            make \
+            g++
+
+      - name: 设置 Android NDK
+        uses: actions/setup-android@v4
+        with:
+          ndk: latest
+
+      - name: 配置编译环境
+        run: |
+          # 设置 NDK 路径（actions/setup-android 已配置好 ANDROID_NDK_ROOT）
+          NDK_PATH=$ANDROID_NDK_ROOT
+          echo "NDK_PATH=$NDK_PATH" >> $GITHUB_ENV
+          
+          # 设置目标 API 级别（Android 5.0+ 才支持 FUSE）
+          API_LEVEL=21
+          echo "API_LEVEL=$API_LEVEL" >> $GITHUB_ENV
+
+      - name: 交叉编译 bindfs (${{ matrix.abi }})
+        run: |
+          NDK_PATH=${{ env.NDK_PATH }}
+          API_LEVEL=${{ env.API_LEVEL }}
+          ABI=${{ matrix.abi }}
+          
+          # 创建独立工具链（兼容旧版 NDK 的写法）
+          $NDK_PATH/build/tools/make_standalone_toolchain.py \
+            --arch $ABI \
+            --api $API_LEVEL \
+            --install-dir ./toolchain
+          
+          # 将工具链加入 PATH
+          export PATH=$(pwd)/toolchain/bin:$PATH
+          
+          # 设置编译器前缀
+          case $ABI in
+            arm64-v8a)   HOST=aarch64-linux-android ;;
+            armeabi-v7a) HOST=armv7a-linux-androideabi ;;
+            x86_64)      HOST=x86_64-linux-android ;;
+            x86)         HOST=i686-linux-android ;;
+          esac
+          
+          # 配置（注意：需要静态链接 libfuse，这里只编译 bindfs 本身）
+          ./configure \
+            --host=$HOST \
+            --enable-static \
+            --disable-shared \
+            LDFLAGS="-static -Wl,--gc-sections" \
+            CPPFLAGS="-I$NDK_PATH/sysroot/usr/include" \
+            LIBS="-lfuse -lpthread"
+          
+          # 编译
+          make -j$(nproc)
+          
+          # 检查生成的二进制文件
+          file bindfs || true
+          ls -lh bindfs || true
+
+      - name: 上传编译产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: bindfs-${{ matrix.abi }}
+          path: bindfs
