@@ -1,26 +1,39 @@
-name: Build bindfs
-
-on: [push, pull_request]
+name: Build bindfs Linux Binary
+on:
+  push:
+    tags: ["v*"] # 推送版本tag触发发布
+  workflow_dispatch: # 支持手动点击运行
 
 jobs:
-  build:
+  build-linux-amd64:
     runs-on: ubuntu-latest
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: 拉取源码
+        uses: actions/checkout@v5
 
-    - name: Install dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y build-essential pkg-config libfuse3-dev
+      - name: 安装编译依赖
+        run: |
+          sudo apt update
+          sudo apt install -y build-essential pkg-config libfuse3-dev ruby valgrind
 
-    - name: Configure and compile
-      run: |
-        ./configure
-        make
+      - name: 编译bindfs
+        run: |
+          ./autogen.sh
+          ./configure
+          make -j$(nproc)
+          mkdir -p dist
+          cp bindfs dist/bindfs-linux-amd64
 
-    - name: Upload binary (可选)
-      uses: actions/upload-artifact@v4
-      with:
-        name: bindfs-binary
-        path: bindfs
+      - name: 上传编译产物到工作流
+        uses: actions/upload-artifact@v4
+        with:
+          name: bindfs-bin
+          path: dist/
+
+      - name: 自动创建Release并上传二进制
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: dist/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
